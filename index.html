@@ -1,83 +1,302 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>IVAO Aircraft Map</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <link
-    rel="stylesheet"
-    href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css"
-    crossorigin=""
-  />
-  <style>
-    html, body { margin: 0; padding: 0; height: 100%; }
-    #map { height: 100vh; width: 100vw; }
-    .popup-content { font-size: 14px; }
-  </style>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>IVAO UK Live Map</title>
+
+<!-- Leaflet CSS -->
+<link
+  rel="stylesheet"
+  href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  integrity="sha256-oF7D0eEdPJLmEGBGpR6sPx4v8SGmNUFp+G3+Yt6vNfQ="
+  crossorigin=""
+/>
+
+<style>
+  body, html {
+    margin: 0; height: 100%; background: #121212; color: white; font-family: Arial, sans-serif;
+  }
+  #map {
+    width: 100%; height: 100vh;
+  }
+  /* Custom ATC badges */
+  .badge {
+    display: inline-block;
+    font-weight: bold;
+    font-size: 12px;
+    line-height: 14px;
+    text-align: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 3px;
+    color: white;
+    user-select: none;
+    pointer-events: none;
+  }
+  .badge-t { background: #d33; }  /* Tower - red */
+  .badge-g { background: #2a9d8f; }  /* Ground - teal/green */
+  .badge-d { background: #3b82f6; }  /* Delivery - blue */
+
+  /* Aircraft marker icon styles */
+  .aircraft-icon {
+    color: #fff;
+    font-weight: bold;
+    text-shadow: 0 0 2px black;
+    font-size: 14px;
+  }
+
+  /* Popup styling */
+  .popup-content {
+    font-size: 14px;
+  }
+</style>
 </head>
 <body>
-  <div id="map"></div>
 
-  <script src="https://unpkg.com/leaflet@1.9.3/dist/leaflet.js" crossorigin=""></script>
-  <script>
-    const map = L.map('map').setView([51.505, -0.09], 5);
+<div id="map"></div>
 
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 18,
-      attribution: '© OpenStreetMap contributors'
-    }).addTo(map);
+<!-- Leaflet JS -->
+<script
+  src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+  integrity="sha256-o9N1j8e+PdBTvdhzyZt+Dl1DpoKDYz43kflb9o+QlNw="
+  crossorigin=""
+></script>
 
-    const aircraftLayer = L.layerGroup().addTo(map);
+<script>
+  // --- CONFIG ---
+  const TOKEN_SERVER_URL = 'https://ivao-token-server.onrender.com/token'; // Your token server
+  const IVAO_WHAZZUP_URL = 'https://api.ivao.aero/v2/tracker/whazzup';
+  const REFRESH_INTERVAL_MS = 15000;
 
-    // Your backend endpoint serving IVAO aircraft data
-    const backendURL = 'https://ivao-token-server.onrender.com/aircraft'; 
-
-    async function fetchAircraft() {
-      try {
-        const res = await fetch(backendURL);
-        if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
-
-        const data = await res.json();
-
-        aircraftLayer.clearLayers();
-
-        if (!data || !data.response) {
-          console.error('No aircraft data found in response');
-          return;
+  // UK airspace GeoJSON (simplified example)
+  const airspaceGeoJSON = {
+    "type": "FeatureCollection",
+    "features": [
+      {
+        "type": "Feature",
+        "properties": { "name": "Gatwick Director", "type": "radar" },
+        "geometry": {
+          "type": "Polygon",
+          "coordinates": [[
+            [-0.26, 51.3], [-0.05, 51.3], [-0.05, 51.45], [-0.26, 51.45], [-0.26, 51.3]
+          ]]
         }
-
-        data.response.forEach(ac => {
-          const lat = ac.latitude;
-          const lon = ac.longitude;
-          if (!lat || !lon) return;
-
-          const callsign = ac.callsign || 'N/A';
-          const aircraftType = ac.aircraft_type || 'N/A';
-          const altitude = ac.altitude ? ac.altitude + ' ft' : 'N/A';
-          const groundspeed = ac.groundspeed ? ac.groundspeed + ' kts' : 'N/A';
-          const flightRules = ac.flight_rules || 'N/A';
-
-          const marker = L.marker([lat, lon]).addTo(aircraftLayer);
-
-          const popupContent = `
-            <div class="popup-content">
-              <strong>${callsign}</strong><br/>
-              Type: ${aircraftType}<br/>
-              Altitude: ${altitude}<br/>
-              Groundspeed: ${groundspeed}<br/>
-              Flight Rules: ${flightRules}
-            </div>
-          `;
-
-          marker.bindPopup(popupContent);
-        });
-      } catch (err) {
-        console.error('Failed to fetch aircraft:', err);
+      },
+      {
+        "type": "Feature",
+        "properties": { "name": "London Area Control", "type": "area" },
+        "geometry": {
+          "type": "Polygon",
+          "coordinates": [[
+            [-0.8, 51.0], [0.2, 51.0], [0.2, 51.6], [-0.8, 51.6], [-0.8, 51.0]
+          ]]
+        }
       }
-    }
+    ]
+  };
 
-    fetchAircraft();
-    setInterval(fetchAircraft, 30000);
-  </script>
+  // --- Initialize map ---
+  const map = L.map('map', {
+    maxZoom: 12,
+    minZoom: 5,
+    zoomControl: true,
+  }).setView([51.5, -0.12], 7);
+
+  // Dark themed base layer from CartoDB
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    attribution:
+      '&copy; <a href="https://carto.com/">CartoDB</a> &copy; <a href="https://openstreetmap.org/copyright">OpenStreetMap</a>',
+    maxZoom: 19,
+  }).addTo(map);
+
+  // --- Add airspace polygons ---
+  function styleAirspace(feature) {
+    if (feature.properties.type === 'radar') {
+      return { color: '#d33', weight: 3, fillOpacity: 0 };
+    } else if (feature.properties.type === 'area') {
+      return { color: '#3b82f6', weight: 2, fillOpacity: 0.1 };
+    }
+    return {};
+  }
+  L.geoJSON(airspaceGeoJSON, {
+    style: styleAirspace,
+    onEachFeature: (feature, layer) => {
+      layer.bindPopup(`<b>${feature.properties.name}</b>`);
+    }
+  }).addTo(map);
+
+  // --- Containers for markers ---
+  const aircraftMarkers = new Map();
+  const atcMarkers = new Map();
+
+  // --- Helper: Create aircraft icon ---
+  function createAircraftIcon() {
+    return L.divIcon({
+      className: 'aircraft-icon',
+      html: '✈️',
+      iconSize: [20, 20],
+      iconAnchor: [10, 10],
+    });
+  }
+
+  // --- Helper: Create ATC icon with badge ---
+  function createAtcIcon(type) {
+    const span = document.createElement('span');
+    span.classList.add('badge');
+    if (type === 'TOWER') span.classList.add('badge-t');
+    else if (type === 'GROUND') span.classList.add('badge-g');
+    else if (type === 'DELIVERY') span.classList.add('badge-d');
+    span.textContent = type.charAt(0);
+    return L.divIcon({
+      className: '',
+      html: span.outerHTML,
+      iconSize: [18, 18],
+      iconAnchor: [9, 9],
+      popupAnchor: [0, -10],
+    });
+  }
+
+  // --- Fetch token from token server ---
+  async function getToken() {
+    try {
+      const resp = await fetch(TOKEN_SERVER_URL);
+      if (!resp.ok) throw new Error(`Token server error ${resp.status}`);
+      const json = await resp.json();
+      if (!json.token) throw new Error('No token received');
+      return json.token;
+    } catch (err) {
+      console.error('Error fetching token:', err);
+      throw err;
+    }
+  }
+
+  // --- Fetch IVAO whazzup data ---
+  async function fetchIVAOData(token) {
+    try {
+      const resp = await fetch(IVAO_WHAZZUP_URL, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json',
+        },
+      });
+      if (!resp.ok) throw new Error(`IVAO API error ${resp.status}`);
+      return await resp.json();
+    } catch (err) {
+      console.error('Error fetching IVAO data:', err);
+      throw err;
+    }
+  }
+
+  // --- Update ATC Markers ---
+  function updateAtcMarkers(atcs) {
+    // Clear old markers
+    atcMarkers.forEach(marker => map.removeLayer(marker));
+    atcMarkers.clear();
+
+    atcs.forEach(atc => {
+      if (!atc.position || !atc.frequency) return;
+      const lat = atc.position.latitude;
+      const lon = atc.position.longitude;
+      const type = atc.rating >= 4 ? ( // Example logic: 4+ rating Tower, else Ground or Delivery fallback
+        atc.callsign.toUpperCase().includes('TWR') ? 'TOWER' :
+        atc.callsign.toUpperCase().includes('GND') ? 'GROUND' :
+        atc.callsign.toUpperCase().includes('DEL') ? 'DELIVERY' : 'TOWER'
+      ) : 'GROUND';
+
+      const icon = createAtcIcon(type);
+      const marker = L.marker([lat, lon], { icon }).addTo(map);
+
+      const popupHtml = `
+        <div class="popup-content">
+          <strong>${atc.callsign}</strong><br/>
+          <em>${atc.position.name || 'Unknown'}</em><br/>
+          Freq: ${atc.frequency}
+        </div>
+      `;
+      marker.bindPopup(popupHtml);
+
+      atcMarkers.set(atc.callsign, marker);
+    });
+  }
+
+  // --- Update Aircraft Markers ---
+  function updateAircraftMarkers(pilots) {
+    const currentKeys = new Set();
+
+    pilots.forEach(pilot => {
+      if (!pilot.position || !pilot.flightPlan) return;
+      const key = pilot.callsign;
+      currentKeys.add(key);
+
+      const lat = pilot.position.latitude;
+      const lon = pilot.position.longitude;
+
+      let marker = aircraftMarkers.get(key);
+      if (!marker) {
+        // New marker
+        marker = L.marker([lat, lon], { icon: createAircraftIcon() }).addTo(map);
+        aircraftMarkers.set(key, marker);
+      } else {
+        // Update existing marker position
+        marker.setLatLng([lat, lon]);
+      }
+
+      // Popup content
+      const alt = pilot.position.altitude_ft || 'N/A';
+      const speed = pilot.position.ground_speed_kts || 'N/A';
+      const dep = pilot.flightPlan.departureId || 'N/A';
+      const arr = pilot.flightPlan.arrivalId || 'N/A';
+      const route = pilot.flightPlan.route || 'N/A';
+
+      const popupHtml = `
+        <div class="popup-content">
+          <strong>${pilot.callsign}</strong><br/>
+          Alt: ${alt} ft<br/>
+          Speed: ${speed} kts<br/>
+          Route: ${dep} → ${arr}<br/>
+          <small>${route}</small>
+        </div>
+      `;
+      marker.bindPopup(popupHtml);
+    });
+
+    // Remove markers for pilots no longer present
+    aircraftMarkers.forEach((marker, key) => {
+      if (!currentKeys.has(key)) {
+        map.removeLayer(marker);
+        aircraftMarkers.delete(key);
+      }
+    });
+  }
+
+  // --- Main refresh function ---
+  async function refresh() {
+    try {
+      const token = await getToken();
+      const data = await fetchIVAOData(token);
+
+      if (!data.clients) {
+        console.warn('No clients in IVAO data');
+        return;
+      }
+
+      // Separate ATC and Pilots
+      const controllers = data.clients.controllers || [];
+      const pilots = data.clients.pilots || [];
+
+      updateAtcMarkers(controllers);
+      updateAircraftMarkers(pilots);
+    } catch (err) {
+      console.error('Refresh error:', err);
+    }
+  }
+
+  // Initial load and periodic refresh
+  refresh();
+  setInterval(refresh, REFRESH_INTERVAL_MS);
+
+</script>
+
 </body>
 </html>
