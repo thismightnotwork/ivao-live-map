@@ -39,22 +39,20 @@
   crossorigin=""
 ></script>
 <script>
-  const map = L.map('map').setView([51.5, -0.1], 6); // Center on London region
+  const map = L.map('map').setView([51.5, -0.1], 6);
 
-  // Base Tile Layer (OpenStreetMap)
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 18,
   }).addTo(map);
 
-  // IVAO API URL (live data)
   const IVAO_API = 'https://api.ivao.aero/v2/vatsim-data.json';
 
-  // Demo airspace boundaries example (replace with your real data)
+  // Example demo airspace boundaries (replace with real GeoJSON or coords)
   const airspaceData = {
     "area": [
       {
         "name": "Area Control Example",
-        "color": "#0000FF", // Blue fill
+        "color": "#0000FF",
         "coords": [
           [51.2, -1.5],
           [51.8, -1.5],
@@ -67,7 +65,7 @@
     "radar": [
       {
         "name": "Radar Control Example",
-        "color": "#FF0000", // Red border
+        "color": "#FF0000",
         "coords": [
           [50.9, -0.5],
           [51.2, -0.8],
@@ -78,7 +76,6 @@
     ]
   };
 
-  // Draw airspace polygons
   function drawAirspace() {
     airspaceData.area.forEach(area => {
       L.polygon(area.coords, {
@@ -96,7 +93,6 @@
     });
   }
 
-  // Marker icons for aircraft (simple colored circles)
   function createAircraftIcon() {
     return L.divIcon({
       className: 'aircraft-icon',
@@ -106,7 +102,6 @@
     });
   }
 
-  // Create ATC box marker icon
   function createAtcBox(type) {
     let className = 'atc-box ';
     let label = '';
@@ -123,28 +118,23 @@
     });
   }
 
-  // Store markers to clear on refresh
   let aircraftMarkers = [];
   let atcMarkers = [];
 
-  // Fetch and plot IVAO data
   async function updateIvAoData() {
     try {
       const res = await fetch(IVAO_API);
       if (!res.ok) throw new Error('Network response not OK');
       const data = await res.json();
 
-      // Clear old markers
       aircraftMarkers.forEach(m => map.removeLayer(m));
       atcMarkers.forEach(m => map.removeLayer(m));
       aircraftMarkers = [];
       atcMarkers = [];
 
-      // Airports with ATC info (keyed by ICAO)
       const airports = data.facilities || {};
       const pilots = data.pilots || [];
 
-      // Plot aircraft
       pilots.forEach(pilot => {
         if (!pilot.latitude || !pilot.longitude) return;
 
@@ -169,7 +159,6 @@
         aircraftMarkers.push(marker);
       });
 
-      // Plot ATC on airports
       for (const icao in airports) {
         const atcInfo = airports[icao];
         const lat = atcInfo.latitude;
@@ -177,8 +166,6 @@
 
         if (!lat || !lon) continue;
 
-        // ATC types available on this airport
-        // Key is 'controllers' array with types like TWR, GND, DEL
         if (atcInfo.controllers && atcInfo.controllers.length > 0) {
           atcInfo.controllers.forEach(ctrl => {
             let type = null;
@@ -203,8 +190,7 @@
 
   drawAirspace();
   updateIvAoData();
-  setInterval(updateIvAoData, 30 * 1000); // refresh every 30 sec
-
+  setInterval(updateIvAoData, 30 * 1000);
 </script>
 </body>
 </html>
