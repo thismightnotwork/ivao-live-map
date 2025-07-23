@@ -2,301 +2,181 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
+<title>IVAO Radar Map Inspired by vatsim-radar.com</title>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>IVAO UK Live Map</title>
-
-<!-- Leaflet CSS -->
 <link
   rel="stylesheet"
   href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-  integrity="sha256-oF7D0eEdPJLmEGBGpR6sPx4v8SGmNUFp+G3+Yt6vNfQ="
-  crossorigin=""
 />
-
 <style>
-  body, html {
-    margin: 0; height: 100%; background: #121212; color: white; font-family: Arial, sans-serif;
-  }
-  #map {
-    width: 100%; height: 100vh;
-  }
-  /* Custom ATC badges */
-  .badge {
-    display: inline-block;
-    font-weight: bold;
-    font-size: 12px;
-    line-height: 14px;
-    text-align: center;
-    width: 18px;
-    height: 18px;
-    border-radius: 3px;
+  html, body, #map {
+    height: 100%;
+    margin: 0; padding: 0;
+    background-color: #121212;
     color: white;
-    user-select: none;
-    pointer-events: none;
   }
-  .badge-t { background: #d33; }  /* Tower - red */
-  .badge-g { background: #2a9d8f; }  /* Ground - teal/green */
-  .badge-d { background: #3b82f6; }  /* Delivery - blue */
-
-  /* Aircraft marker icon styles */
-  .aircraft-icon {
-    color: #fff;
+  .leaflet-popup-content-wrapper {
+    background: #222;
+    color: white;
+    font-family: Arial, sans-serif;
+  }
+  .atc-badge {
     font-weight: bold;
-    text-shadow: 0 0 2px black;
-    font-size: 14px;
+    border-radius: 3px;
+    padding: 1px 5px;
+    margin-right: 5px;
+    font-size: 12px;
+    display: inline-block;
+    vertical-align: middle;
+    color: white;
   }
-
-  /* Popup styling */
-  .popup-content {
-    font-size: 14px;
+  .badge-tower { background: #c0392b; }  /* red */
+  .badge-ground { background: #27ae60; } /* green */
+  .badge-delivery { background: #2980b9; } /* blue */
+  #map {
+    filter: brightness(0.9);
   }
 </style>
 </head>
 <body>
-
 <div id="map"></div>
 
-<!-- Leaflet JS -->
-<script
-  src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-  integrity="sha256-o9N1j8e+PdBTvdhzyZt+Dl1DpoKDYz43kflb9o+QlNw="
-  crossorigin=""
-></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
 <script>
-  // --- CONFIG ---
-  const TOKEN_SERVER_URL = 'https://ivao-token-server.onrender.com/token'; // Your token server
-  const IVAO_WHAZZUP_URL = 'https://api.ivao.aero/v2/tracker/whazzup';
-  const REFRESH_INTERVAL_MS = 15000;
+const map = L.map('map').setView([51.41779, 1.99934], 7);
 
-  // UK airspace GeoJSON (simplified example)
-  const airspaceGeoJSON = {
-    "type": "FeatureCollection",
-    "features": [
-      {
-        "type": "Feature",
-        "properties": { "name": "Gatwick Director", "type": "radar" },
-        "geometry": {
-          "type": "Polygon",
-          "coordinates": [[
-            [-0.26, 51.3], [-0.05, 51.3], [-0.05, 51.45], [-0.26, 51.45], [-0.26, 51.3]
-          ]]
-        }
-      },
-      {
-        "type": "Feature",
-        "properties": { "name": "London Area Control", "type": "area" },
-        "geometry": {
-          "type": "Polygon",
-          "coordinates": [[
-            [-0.8, 51.0], [0.2, 51.0], [0.2, 51.6], [-0.8, 51.6], [-0.8, 51.0]
-          ]]
-        }
-      }
-    ]
-  };
+// Dark basemap from CartoDB
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  maxZoom: 19,
+  attribution: '&copy; OpenStreetMap &copy; CartoDB',
+}).addTo(map);
 
-  // --- Initialize map ---
-  const map = L.map('map', {
-    maxZoom: 12,
-    minZoom: 5,
-    zoomControl: true,
-  }).setView([51.5, -0.12], 7);
+// Placeholder token server and API URLs
+const TOKEN_SERVER = 'https://ivao-token-server.onrender.com/token';
+const IVAO_API = 'https://api.ivao.aero/v2/tracker/whazzup';
 
-  // Dark themed base layer from CartoDB
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-    attribution:
-      '&copy; <a href="https://carto.com/">CartoDB</a> &copy; <a href="https://openstreetmap.org/copyright">OpenStreetMap</a>',
-    maxZoom: 19,
-  }).addTo(map);
+// Map layers to hold markers
+const atcLayer = L.layerGroup().addTo(map);
+const aircraftLayer = L.layerGroup().addTo(map);
 
-  // --- Add airspace polygons ---
-  function styleAirspace(feature) {
-    if (feature.properties.type === 'radar') {
-      return { color: '#d33', weight: 3, fillOpacity: 0 };
-    } else if (feature.properties.type === 'area') {
-      return { color: '#3b82f6', weight: 2, fillOpacity: 0.1 };
-    }
-    return {};
+// Custom icon for controllers with badges
+function atcIcon(controller) {
+  let badgeClass = '';
+  let badgeLetter = '';
+  if (controller.facility === 'ATC_TWR') {
+    badgeClass = 'badge-tower';
+    badgeLetter = 'T';
+  } else if (controller.facility === 'ATC_GND') {
+    badgeClass = 'badge-ground';
+    badgeLetter = 'G';
+  } else if (controller.facility === 'ATC_DEL') {
+    badgeClass = 'badge-delivery';
+    badgeLetter = 'D';
+  } else {
+    badgeClass = 'badge-tower';
+    badgeLetter = '?';
   }
-  L.geoJSON(airspaceGeoJSON, {
-    style: styleAirspace,
-    onEachFeature: (feature, layer) => {
-      layer.bindPopup(`<b>${feature.properties.name}</b>`);
-    }
-  }).addTo(map);
+  const html = `<div class="atc-badge ${badgeClass}">${badgeLetter}</div><span style="color:white;">${controller.callsign}</span>`;
+  return L.divIcon({
+    html,
+    className: '',
+    iconSize: [40, 20],
+    iconAnchor: [20, 10],
+    popupAnchor: [0, -10]
+  });
+}
 
-  // --- Containers for markers ---
-  const aircraftMarkers = new Map();
-  const atcMarkers = new Map();
+// Custom icon for aircraft - simple colored circle with callsign label
+function aircraftIcon() {
+  return L.divIcon({
+    html: `<div style="
+      width: 16px; height: 16px; border-radius: 50%; background: #f39c12; border: 2px solid #e67e22;
+      box-shadow: 0 0 5px #f39c12;
+    "></div>`,
+    className: '',
+    iconSize: [16, 16],
+    iconAnchor: [8, 8],
+    popupAnchor: [0, -10]
+  });
+}
 
-  // --- Helper: Create aircraft icon ---
-  function createAircraftIcon() {
-    return L.divIcon({
-      className: 'aircraft-icon',
-      html: '✈️',
-      iconSize: [20, 20],
-      iconAnchor: [10, 10],
+// Fetch token from your token server
+async function getToken() {
+  try {
+    const res = await fetch(TOKEN_SERVER);
+    if (!res.ok) throw new Error('Token fetch failed');
+    const data = await res.json();
+    if (!data.token) throw new Error('No token in response');
+    return data.token;
+  } catch(e) {
+    console.error('Token error:', e);
+    return null;
+  }
+}
+
+// Fetch IVAO data using token
+async function fetchIVAO(token) {
+  if (!token) return null;
+  try {
+    const res = await fetch(IVAO_API, {
+      headers: { 'Authorization': 'Bearer ' + token }
     });
+    if (!res.ok) throw new Error('IVAO API error');
+    const data = await res.json();
+    return data;
+  } catch(e) {
+    console.error('Fetch IVAO error:', e);
+    return null;
   }
+}
 
-  // --- Helper: Create ATC icon with badge ---
-  function createAtcIcon(type) {
-    const span = document.createElement('span');
-    span.classList.add('badge');
-    if (type === 'TOWER') span.classList.add('badge-t');
-    else if (type === 'GROUND') span.classList.add('badge-g');
-    else if (type === 'DELIVERY') span.classList.add('badge-d');
-    span.textContent = type.charAt(0);
-    return L.divIcon({
-      className: '',
-      html: span.outerHTML,
-      iconSize: [18, 18],
-      iconAnchor: [9, 9],
-      popupAnchor: [0, -10],
-    });
-  }
+// Update map markers
+async function updateMap() {
+  const token = await getToken();
+  if (!token) return;
 
-  // --- Fetch token from token server ---
-  async function getToken() {
-    try {
-      const resp = await fetch(TOKEN_SERVER_URL);
-      if (!resp.ok) throw new Error(`Token server error ${resp.status}`);
-      const json = await resp.json();
-      if (!json.token) throw new Error('No token received');
-      return json.token;
-    } catch (err) {
-      console.error('Error fetching token:', err);
-      throw err;
-    }
-  }
+  const data = await fetchIVAO(token);
+  if (!data || !data.clients) return;
 
-  // --- Fetch IVAO whazzup data ---
-  async function fetchIVAOData(token) {
-    try {
-      const resp = await fetch(IVAO_WHAZZUP_URL, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: 'application/json',
-        },
-      });
-      if (!resp.ok) throw new Error(`IVAO API error ${resp.status}`);
-      return await resp.json();
-    } catch (err) {
-      console.error('Error fetching IVAO data:', err);
-      throw err;
-    }
-  }
+  atcLayer.clearLayers();
+  aircraftLayer.clearLayers();
 
-  // --- Update ATC Markers ---
-  function updateAtcMarkers(atcs) {
-    // Clear old markers
-    atcMarkers.forEach(marker => map.removeLayer(marker));
-    atcMarkers.clear();
+  // Add controllers
+  (data.clients.controllers || []).forEach(ctrl => {
+    if (!ctrl.position) return;
+    const marker = L.marker([ctrl.position.lat, ctrl.position.lon], { icon: atcIcon(ctrl) });
+    const popupContent = `
+      <strong>${ctrl.callsign}</strong><br/>
+      Position: ${ctrl.position.name || 'N/A'}<br/>
+      Frequency: ${ctrl.frequency || 'N/A'}
+    `;
+    marker.bindPopup(popupContent);
+    atcLayer.addLayer(marker);
+  });
 
-    atcs.forEach(atc => {
-      if (!atc.position || !atc.frequency) return;
-      const lat = atc.position.latitude;
-      const lon = atc.position.longitude;
-      const type = atc.rating >= 4 ? ( // Example logic: 4+ rating Tower, else Ground or Delivery fallback
-        atc.callsign.toUpperCase().includes('TWR') ? 'TOWER' :
-        atc.callsign.toUpperCase().includes('GND') ? 'GROUND' :
-        atc.callsign.toUpperCase().includes('DEL') ? 'DELIVERY' : 'TOWER'
-      ) : 'GROUND';
+  // Add aircraft
+  (data.clients.pilots || []).forEach(ac => {
+    if (!ac.position) return;
+    const marker = L.marker([ac.position.lat, ac.position.lon], { icon: aircraftIcon() });
+    const popupContent = `
+      <strong>${ac.callsign}</strong><br/>
+      Aircraft: ${ac.flightPlan?.aircraftId || 'N/A'}<br/>
+      Departure: ${ac.flightPlan?.departureId || 'N/A'}<br/>
+      Arrival: ${ac.flightPlan?.arrivalId || 'N/A'}<br/>
+      Altitude: ${ac.position.altitude || 'N/A'} ft<br/>
+      Groundspeed: ${ac.position.groundspeed || 'N/A'} kts
+    `;
+    marker.bindPopup(popupContent);
+    aircraftLayer.addLayer(marker);
+  });
 
-      const icon = createAtcIcon(type);
-      const marker = L.marker([lat, lon], { icon }).addTo(map);
+  // TODO: Add airspace boundaries and radar sectors here, using GeoJSON overlays
+}
 
-      const popupHtml = `
-        <div class="popup-content">
-          <strong>${atc.callsign}</strong><br/>
-          <em>${atc.position.name || 'Unknown'}</em><br/>
-          Freq: ${atc.frequency}
-        </div>
-      `;
-      marker.bindPopup(popupHtml);
-
-      atcMarkers.set(atc.callsign, marker);
-    });
-  }
-
-  // --- Update Aircraft Markers ---
-  function updateAircraftMarkers(pilots) {
-    const currentKeys = new Set();
-
-    pilots.forEach(pilot => {
-      if (!pilot.position || !pilot.flightPlan) return;
-      const key = pilot.callsign;
-      currentKeys.add(key);
-
-      const lat = pilot.position.latitude;
-      const lon = pilot.position.longitude;
-
-      let marker = aircraftMarkers.get(key);
-      if (!marker) {
-        // New marker
-        marker = L.marker([lat, lon], { icon: createAircraftIcon() }).addTo(map);
-        aircraftMarkers.set(key, marker);
-      } else {
-        // Update existing marker position
-        marker.setLatLng([lat, lon]);
-      }
-
-      // Popup content
-      const alt = pilot.position.altitude_ft || 'N/A';
-      const speed = pilot.position.ground_speed_kts || 'N/A';
-      const dep = pilot.flightPlan.departureId || 'N/A';
-      const arr = pilot.flightPlan.arrivalId || 'N/A';
-      const route = pilot.flightPlan.route || 'N/A';
-
-      const popupHtml = `
-        <div class="popup-content">
-          <strong>${pilot.callsign}</strong><br/>
-          Alt: ${alt} ft<br/>
-          Speed: ${speed} kts<br/>
-          Route: ${dep} → ${arr}<br/>
-          <small>${route}</small>
-        </div>
-      `;
-      marker.bindPopup(popupHtml);
-    });
-
-    // Remove markers for pilots no longer present
-    aircraftMarkers.forEach((marker, key) => {
-      if (!currentKeys.has(key)) {
-        map.removeLayer(marker);
-        aircraftMarkers.delete(key);
-      }
-    });
-  }
-
-  // --- Main refresh function ---
-  async function refresh() {
-    try {
-      const token = await getToken();
-      const data = await fetchIVAOData(token);
-
-      if (!data.clients) {
-        console.warn('No clients in IVAO data');
-        return;
-      }
-
-      // Separate ATC and Pilots
-      const controllers = data.clients.controllers || [];
-      const pilots = data.clients.pilots || [];
-
-      updateAtcMarkers(controllers);
-      updateAircraftMarkers(pilots);
-    } catch (err) {
-      console.error('Refresh error:', err);
-    }
-  }
-
-  // Initial load and periodic refresh
-  refresh();
-  setInterval(refresh, REFRESH_INTERVAL_MS);
-
+// Initial load + refresh every 30 seconds
+updateMap();
+setInterval(updateMap, 30000);
 </script>
-
 </body>
 </html>
