@@ -2,181 +2,363 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>IVAO Radar Map Inspired by vatsim-radar.com</title>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>IVAO Radar Map Full Feature</title>
+
+<!-- Leaflet CSS -->
 <link
   rel="stylesheet"
   href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
 />
+
+<!-- MarkerCluster CSS -->
+<link
+  rel="stylesheet"
+  href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"
+/>
+<link
+  rel="stylesheet"
+  href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"
+/>
+
 <style>
   html, body, #map {
     height: 100%;
     margin: 0; padding: 0;
-    background-color: #121212;
-    color: white;
-  }
-  .leaflet-popup-content-wrapper {
-    background: #222;
+    background: #121212;
     color: white;
     font-family: Arial, sans-serif;
   }
+
+  /* Map container */
+  #map {
+    filter: brightness(0.95);
+  }
+
+  /* Popup styling */
+  .leaflet-popup-content-wrapper {
+    background: #222;
+    color: white;
+    font-size: 14px;
+  }
+
+  /* ATC badge styles */
   .atc-badge {
     font-weight: bold;
     border-radius: 3px;
-    padding: 1px 5px;
-    margin-right: 5px;
+    padding: 2px 6px;
+    margin-right: 6px;
     font-size: 12px;
     display: inline-block;
     vertical-align: middle;
     color: white;
+    user-select: none;
   }
-  .badge-tower { background: #c0392b; }  /* red */
-  .badge-ground { background: #27ae60; } /* green */
+  .badge-tower { background: #c0392b; }    /* red */
+  .badge-ground { background: #27ae60; }   /* green */
   .badge-delivery { background: #2980b9; } /* blue */
-  #map {
-    filter: brightness(0.9);
+  .badge-center { background: #8e44ad; }   /* purple */
+
+  /* Aircraft icon */
+  .ac-icon {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #f39c12;
+    border: 2px solid #e67e22;
+    box-shadow: 0 0 8px #f39c12;
+  }
+
+  /* Controls container */
+  #controls {
+    position: absolute;
+    top: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 1000;
+    background: #222;
+    padding: 10px 15px;
+    border-radius: 6px;
+    box-shadow: 0 0 12px rgba(0,0,0,0.7);
+  }
+  #controls label, #controls input, #controls button {
+    color: white;
+    font-size: 14px;
+  }
+  #controls input[type="text"] {
+    width: 90px;
+    padding: 5px;
+    margin-right: 8px;
+    border-radius: 4px;
+    border: none;
+    outline: none;
+    font-weight: bold;
+    text-transform: uppercase;
+  }
+  #controls button {
+    background: #444;
+    border: none;
+    padding: 6px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: bold;
+  }
+  #controls button:hover {
+    background: #666;
+  }
+  #controls input[type="checkbox"] {
+    margin-left: 10px;
+    vertical-align: middle;
   }
 </style>
 </head>
 <body>
+
 <div id="map"></div>
 
+<div id="controls">
+  Center: <input type="text" id="centerInput" placeholder="lat,lng" value="51.41779,1.99934" />
+  Zoom: <input type="text" id="zoomInput" placeholder="zoom" value="7" size="2" />
+  <button id="btnGo">Go</button>
+  <label><input type="checkbox" id="toggleSectors" checked /> Show Sectors</label>
+  <button id="btnRefresh">Refresh Now</button>
+</div>
+
+<!-- Leaflet JS -->
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
+<!-- MarkerCluster plugin -->
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+
 <script>
-const map = L.map('map').setView([51.41779, 1.99934], 7);
+  // --- CONFIG ---
+  const TOKEN_SERVER = 'https://ivao-token-server.onrender.com/token';
+  const IVAO_API = 'https://api.ivao.aero/v2/tracker/whazzup';
+  const REFRESH_INTERVAL_MS = 30000; // 30 seconds
 
-// Dark basemap from CartoDB
-L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-  maxZoom: 19,
-  attribution: '&copy; OpenStreetMap &copy; CartoDB',
-}).addTo(map);
+  // --- MAP SETUP ---
+  const map = L.map('map').setView([51.41779, 1.99934], 7);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap &copy; CartoDB',
+  }).addTo(map);
 
-// Placeholder token server and API URLs
-const TOKEN_SERVER = 'https://ivao-token-server.onrender.com/token';
-const IVAO_API = 'https://api.ivao.aero/v2/tracker/whazzup';
+  // Marker cluster groups for aircraft and ATC
+  const aircraftClusterGroup = L.markerClusterGroup();
+  const atcClusterGroup = L.markerClusterGroup();
 
-// Map layers to hold markers
-const atcLayer = L.layerGroup().addTo(map);
-const aircraftLayer = L.layerGroup().addTo(map);
+  // Add clusters to map
+  aircraftClusterGroup.addTo(map);
+  atcClusterGroup.addTo(map);
 
-// Custom icon for controllers with badges
-function atcIcon(controller) {
-  let badgeClass = '';
-  let badgeLetter = '';
-  if (controller.facility === 'ATC_TWR') {
-    badgeClass = 'badge-tower';
-    badgeLetter = 'T';
-  } else if (controller.facility === 'ATC_GND') {
-    badgeClass = 'badge-ground';
-    badgeLetter = 'G';
-  } else if (controller.facility === 'ATC_DEL') {
-    badgeClass = 'badge-delivery';
-    badgeLetter = 'D';
-  } else {
-    badgeClass = 'badge-tower';
-    badgeLetter = '?';
+  // Airspace sectors GeoJSON sample (UK FIR and sectors)
+  // This is a simplified example - replace with real sector polygons as needed
+  const sectorsGeoJson = {
+    "type": "FeatureCollection",
+    "features": [
+      {
+        "type": "Feature",
+        "properties": { "name": "London FIR", "color": "#c0392b" },
+        "geometry": {
+          "type": "Polygon",
+          "coordinates": [[
+            [-2.0, 52.0], [0.5, 53.2], [3.0, 52.5], [3.0, 51.0], [0.0, 50.5], [-1.5, 50.7], [-2.0, 52.0]
+          ]]
+        }
+      },
+      {
+        "type": "Feature",
+        "properties": { "name": "Scottish FIR", "color": "#2980b9" },
+        "geometry": {
+          "type": "Polygon",
+          "coordinates": [[
+            [-6.0, 57.0], [-2.0, 57.5], [-2.0, 55.5], [-5.5, 55.0], [-6.0, 57.0]
+          ]]
+        }
+      }
+    ]
+  };
+
+  let sectorsLayer = null;
+
+  function showSectors(show) {
+    if (show) {
+      if (!sectorsLayer) {
+        sectorsLayer = L.geoJSON(sectorsGeoJson, {
+          style: feature => ({
+            color: feature.properties.color,
+            fillColor: feature.properties.color,
+            fillOpacity: 0.15,
+            weight: 2,
+          }),
+          onEachFeature: (feature, layer) => {
+            layer.bindPopup(`<strong>${feature.properties.name}</strong>`);
+          }
+        }).addTo(map);
+      } else {
+        sectorsLayer.addTo(map);
+      }
+    } else {
+      if (sectorsLayer) {
+        map.removeLayer(sectorsLayer);
+      }
+    }
   }
-  const html = `<div class="atc-badge ${badgeClass}">${badgeLetter}</div><span style="color:white;">${controller.callsign}</span>`;
-  return L.divIcon({
-    html,
-    className: '',
-    iconSize: [40, 20],
-    iconAnchor: [20, 10],
-    popupAnchor: [0, -10]
-  });
-}
+  showSectors(true);
 
-// Custom icon for aircraft - simple colored circle with callsign label
-function aircraftIcon() {
-  return L.divIcon({
-    html: `<div style="
-      width: 16px; height: 16px; border-radius: 50%; background: #f39c12; border: 2px solid #e67e22;
-      box-shadow: 0 0 5px #f39c12;
-    "></div>`,
-    className: '',
-    iconSize: [16, 16],
-    iconAnchor: [8, 8],
-    popupAnchor: [0, -10]
-  });
-}
+  // --- ICONS ---
+  // ATC badges by facility
+  function atcIcon(controller) {
+    let badgeClass = 'badge-center';
+    let badgeLetter = 'C';
 
-// Fetch token from your token server
-async function getToken() {
-  try {
-    const res = await fetch(TOKEN_SERVER);
-    if (!res.ok) throw new Error('Token fetch failed');
-    const data = await res.json();
-    if (!data.token) throw new Error('No token in response');
-    return data.token;
-  } catch(e) {
-    console.error('Token error:', e);
-    return null;
-  }
-}
+    if (controller.facility === 'ATC_TWR') {
+      badgeClass = 'badge-tower';
+      badgeLetter = 'T';
+    } else if (controller.facility === 'ATC_GND') {
+      badgeClass = 'badge-ground';
+      badgeLetter = 'G';
+    } else if (controller.facility === 'ATC_DEL') {
+      badgeClass = 'badge-delivery';
+      badgeLetter = 'D';
+    }
 
-// Fetch IVAO data using token
-async function fetchIVAO(token) {
-  if (!token) return null;
-  try {
-    const res = await fetch(IVAO_API, {
-      headers: { 'Authorization': 'Bearer ' + token }
+    const html = `
+      <div class="atc-badge ${badgeClass}">${badgeLetter}</div>
+      <span style="color:white; font-weight:bold;">${controller.callsign}</span>
+    `;
+
+    return L.divIcon({
+      html,
+      className: '',
+      iconSize: [40, 24],
+      iconAnchor: [20, 12],
+      popupAnchor: [0, -12]
     });
-    if (!res.ok) throw new Error('IVAO API error');
-    const data = await res.json();
-    return data;
-  } catch(e) {
-    console.error('Fetch IVAO error:', e);
-    return null;
   }
-}
 
-// Update map markers
-async function updateMap() {
-  const token = await getToken();
-  if (!token) return;
+  // Aircraft icon - orange circle
+  function aircraftIcon() {
+    return L.divIcon({
+      html: `<div class="ac-icon"></div>`,
+      className: '',
+      iconSize: [18, 18],
+      iconAnchor: [9, 9],
+      popupAnchor: [0, -9]
+    });
+  }
 
-  const data = await fetchIVAO(token);
-  if (!data || !data.clients) return;
+  // --- FETCHING IVAO DATA ---
 
-  atcLayer.clearLayers();
-  aircraftLayer.clearLayers();
+  async function getToken() {
+    try {
+      const res = await fetch(TOKEN_SERVER);
+      if (!res.ok) throw new Error('Token fetch failed');
+      const json = await res.json();
+      if (!json.token) throw new Error('Token missing');
+      return json.token;
+    } catch (e) {
+      console.error('Failed to get token:', e);
+      return null;
+    }
+  }
 
-  // Add controllers
-  (data.clients.controllers || []).forEach(ctrl => {
-    if (!ctrl.position) return;
-    const marker = L.marker([ctrl.position.lat, ctrl.position.lon], { icon: atcIcon(ctrl) });
-    const popupContent = `
-      <strong>${ctrl.callsign}</strong><br/>
-      Position: ${ctrl.position.name || 'N/A'}<br/>
-      Frequency: ${ctrl.frequency || 'N/A'}
-    `;
-    marker.bindPopup(popupContent);
-    atcLayer.addLayer(marker);
+  async function fetchIVAO(token) {
+    if (!token) return null;
+    try {
+      const res = await fetch(IVAO_API, {
+        headers: { 'Authorization': 'Bearer ' + token }
+      });
+      if (!res.ok) throw new Error('IVAO API error');
+      return await res.json();
+    } catch (e) {
+      console.error('IVAO fetch error:', e);
+      return null;
+    }
+  }
+
+  // --- MAP UPDATE ---
+
+  async function updateMap() {
+    const token = await getToken();
+    if (!token) return;
+
+    const data = await fetchIVAO(token);
+    if (!data || !data.clients) return;
+
+    // Clear clusters
+    aircraftClusterGroup.clearLayers();
+    atcClusterGroup.clearLayers();
+
+    // Add ATC markers
+    (data.clients.controllers || []).forEach(ctrl => {
+      if (!ctrl.position) return;
+      const marker = L.marker([ctrl.position.lat, ctrl.position.lon], {
+        icon: atcIcon(ctrl),
+        title: ctrl.callsign
+      });
+      const popupHtml = `
+        <strong>${ctrl.callsign}</strong><br/>
+        Position: ${ctrl.position.name || 'N/A'}<br/>
+        Frequency: ${ctrl.frequency || 'N/A'}
+      `;
+      marker.bindPopup(popupHtml);
+      atcClusterGroup.addLayer(marker);
+    });
+
+    // Add aircraft markers
+    (data.clients.pilots || []).forEach(ac => {
+      if (!ac.position) return;
+      const marker = L.marker([ac.position.lat, ac.position.lon], {
+        icon: aircraftIcon(),
+        title: ac.callsign
+      });
+      const popupHtml = `
+        <strong>${ac.callsign}</strong><br/>
+        Aircraft: ${ac.flightPlan?.aircraftId || 'N/A'}<br/>
+        Departure: ${ac.flightPlan?.departureId || 'N/A'}<br/>
+        Arrival: ${ac.flightPlan?.arrivalId || 'N/A'}<br/>
+        Altitude: ${ac.position.altitude || 'N/A'} ft<br/>
+        Groundspeed: ${ac.position.groundspeed || 'N/A'} kts
+      `;
+      marker.bindPopup(popupHtml);
+      aircraftClusterGroup.addLayer(marker);
+    });
+  }
+
+  // --- UI CONTROLS ---
+
+  const centerInput = document.getElementById('centerInput');
+  const zoomInput = document.getElementById('zoomInput');
+  const btnGo = document.getElementById('btnGo');
+  const btnRefresh = document.getElementById('btnRefresh');
+  const toggleSectorsCheckbox = document.getElementById('toggleSectors');
+
+  btnGo.addEventListener('click', () => {
+    const val = centerInput.value.split(',');
+    if (val.length === 2) {
+      const lat = parseFloat(val[0].trim());
+      const lng = parseFloat(val[1].trim());
+      const zoom = parseInt(zoomInput.value, 10);
+      if (!isNaN(lat) && !isNaN(lng) && !isNaN(zoom)) {
+        map.setView([lat, lng], zoom);
+      }
+    }
   });
 
-  // Add aircraft
-  (data.clients.pilots || []).forEach(ac => {
-    if (!ac.position) return;
-    const marker = L.marker([ac.position.lat, ac.position.lon], { icon: aircraftIcon() });
-    const popupContent = `
-      <strong>${ac.callsign}</strong><br/>
-      Aircraft: ${ac.flightPlan?.aircraftId || 'N/A'}<br/>
-      Departure: ${ac.flightPlan?.departureId || 'N/A'}<br/>
-      Arrival: ${ac.flightPlan?.arrivalId || 'N/A'}<br/>
-      Altitude: ${ac.position.altitude || 'N/A'} ft<br/>
-      Groundspeed: ${ac.position.groundspeed || 'N/A'} kts
-    `;
-    marker.bindPopup(popupContent);
-    aircraftLayer.addLayer(marker);
+  btnRefresh.addEventListener('click', updateMap);
+
+  toggleSectorsCheckbox.addEventListener('change', e => {
+    showSectors(e.target.checked);
   });
 
-  // TODO: Add airspace boundaries and radar sectors here, using GeoJSON overlays
-}
+  // --- INITIAL LOAD ---
+  updateMap();
 
-// Initial load + refresh every 30 seconds
-updateMap();
-setInterval(updateMap, 30000);
+  // Auto refresh interval
+  setInterval(updateMap, REFRESH_INTERVAL_MS);
+
 </script>
+
 </body>
 </html>
