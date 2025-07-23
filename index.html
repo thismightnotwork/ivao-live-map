@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>IVAO Live Map</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<style>
+  html, body, #map { height: 100%; margin: 0; padding: 0; }
+  .atc-box {
+    color: white;
+    font-weight: bold;
+    border-radius: 3px;
+    padding: 2px 5px;
+    font-size: 12px;
+    text-align: center;
+    width: 16px;
+    user-select: none;
+  }
+  .atc-tower { background: red; }
+  .atc-ground { background: green; }
+  .atc-delivery { background: blue; }
+  .aircraft-popup {
+    font-family: monospace;
+  }
+</style>
+<!-- Leaflet CSS -->
+<link
+  rel="stylesheet"
+  href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  crossorigin=""
+/>
+</head>
+<body>
+<div id="map"></div>
+
+<!-- Leaflet JS -->
+<script
+  src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+  crossorigin=""
+></script>
+<script>
+  const map = L.map('map').setView([51.5, -0.1], 6); // Center on London region
+
+  // Base Tile Layer (OpenStreetMap)
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 18,
+  }).addTo(map);
+
+  // IVAO API URL (live data)
+  const IVAO_API = 'https://api.ivao.aero/v2/vatsim-data.json';
+
+  // Demo airspace boundaries example (replace with your real data)
+  const airspaceData = {
+    "area": [
+      {
+        "name": "Area Control Example",
+        "color": "#0000FF", // Blue fill
+        "coords": [
+          [51.2, -1.5],
+          [51.8, -1.5],
+          [52.0, 0.0],
+          [51.4, 0.4],
+          [51.0, -0.5]
+        ]
+      }
+    ],
+    "radar": [
+      {
+        "name": "Radar Control Example",
+        "color": "#FF0000", // Red border
+        "coords": [
+          [50.9, -0.5],
+          [51.2, -0.8],
+          [51.5, -0.7],
+          [51.6, -0.3]
+        ]
+      }
+    ]
+  };
+
+  // Draw airspace polygons
+  function drawAirspace() {
+    airspaceData.area.forEach(area => {
+      L.polygon(area.coords, {
+        color: area.color,
+        fillColor: area.color,
+        fillOpacity: 0.15,
+      }).addTo(map).bindPopup(`Area Controller: ${area.name}`);
+    });
+    airspaceData.radar.forEach(radar => {
+      L.polygon(radar.coords, {
+        color: radar.color,
+        weight: 3,
+        fill: false,
+      }).addTo(map).bindPopup(`Radar Controller: ${radar.name}`);
+    });
+  }
+
+  // Marker icons for aircraft (simple colored circles)
+  function createAircraftIcon() {
+    return L.divIcon({
+      className: 'aircraft-icon',
+      html: '<div style="background:orange; width:12px; height:12px; border-radius:50%; border: 2px solid white;"></div>',
+      iconSize: [16, 16],
+      iconAnchor: [8, 8],
+    });
+  }
+
+  // Create ATC box marker icon
+  function createAtcBox(type) {
+    let className = 'atc-box ';
+    let label = '';
+    switch(type) {
+      case 'T': className += 'atc-tower'; label = 'T'; break;
+      case 'G': className += 'atc-ground'; label = 'G'; break;
+      case 'D': className += 'atc-delivery'; label = 'D'; break;
+    }
+    return L.divIcon({
+      className,
+      html: label,
+      iconSize: [16,16],
+      iconAnchor: [8,8],
+    });
+  }
+
+  // Store markers to clear on refresh
+  let aircraftMarkers = [];
+  let atcMarkers = [];
+
+  // Fetch and plot IVAO data
+  async function updateIvAoData() {
+    try {
+      const res = await fetch(IVAO_API);
+      if (!res.ok) throw new Error('Network response not OK');
+      const data = await res.json();
+
+      // Clear old markers
+      aircraftMarkers.forEach(m => map.removeLayer(m));
+      atcMarkers.forEach(m => map.removeLayer(m));
+      aircraftMarkers = [];
+      atcMarkers = [];
+
+      // Airports with ATC info (keyed by ICAO)
+      const airports = data.facilities || {};
+      const pilots = data.pilots || [];
+
+      // Plot aircraft
+      pilots.forEach(pilot => {
+        if (!pilot.latitude || !pilot.longitude) return;
+
+        const marker = L.marker([pilot.latitude, pilot.longitude], {
+          icon: createAircraftIcon(),
+          title: pilot.callsign,
+        });
+
+        const fp = pilot.flight_plan || {};
+        const popupHtml = `
+          <div class="aircraft-popup">
+            <b>${pilot.callsign}</b><br/>
+            Route: ${fp.departure || 'N/A'} → ${fp.arrival || 'N/A'}<br/>
+            Aircraft: ${fp.aircraft_short || 'N/A'}<br/>
+            Altitude: ${pilot.altitude || 'N/A'} ft<br/>
+            Groundspeed: ${pilot.groundspeed || 'N/A'} kt
+          </div>
+        `;
+
+        marker.bindPopup(popupHtml);
+        marker.addTo(map);
+        aircraftMarkers.push(marker);
+      });
+
+      // Plot ATC on airports
+      for (const icao in airports) {
+        const atcInfo = airports[icao];
+        const lat = atcInfo.latitude;
+        const lon = atcInfo.longitude;
+
+        if (!lat || !lon) continue;
+
+        // ATC types available on this airport
+        // Key is 'controllers' array with types like TWR, GND, DEL
+        if (atcInfo.controllers && atcInfo.controllers.length > 0) {
+          atcInfo.controllers.forEach(ctrl => {
+            let type = null;
+            if (ctrl.type === 'TWR') type = 'T';
+            else if (ctrl.type === 'GND') type = 'G';
+            else if (ctrl.type === 'DEL') type = 'D';
+
+            if (type) {
+              const icon = createAtcBox(type);
+              const marker = L.marker([lat, lon], { icon });
+              marker.bindPopup(`${icao} ${ctrl.type} Controller Online`);
+              marker.addTo(map);
+              atcMarkers.push(marker);
+            }
+          });
+        }
+      }
+    } catch (e) {
+      console.error('Failed to load IVAO data', e);
+    }
+  }
+
+  drawAirspace();
+  updateIvAoData();
+  setInterval(updateIvAoData, 30 * 1000); // refresh every 30 sec
+
+</script>
+</body>
+</html>
